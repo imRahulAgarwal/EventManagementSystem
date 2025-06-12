@@ -1,5 +1,7 @@
 import winston from "winston";
 import "winston-daily-rotate-file";
+import type { MongoDBConnectionOptions } from "winston-mongodb";
+import mongoose, { Types } from "mongoose";
 
 const levels = {
 	error: 0,
@@ -52,6 +54,53 @@ class CustomLogger {
 			});
 
 			transports.push(fileLogger);
+		}
+
+		if (this.config.isDbLogging) {
+			if (mongoose.connection && mongoose.connection.readyState === 1) {
+				const dbOptions = {
+					db: process.env.MONGO_URL,
+					collection: "logs", // The collection name for your Log model
+					level: this.config.level,
+					format: winston.format((info) => {
+						const { level, message, stack, ...meta } = info;
+
+						let userId = meta.userId as string | null;
+						if (userId && !Types.ObjectId.isValid(userId)) {
+							console.warn(`Invalid userId provided for log: ${userId}. Setting to null.`);
+							userId = null;
+						}
+						let entityId = meta.entityId as string | null;
+						if (entityId && !Types.ObjectId.isValid(entityId)) {
+							console.warn(`Invalid entityId provided for log: ${entityId}. Setting to null.`);
+							entityId = null;
+						}
+
+						return {
+							level: level,
+							message: message,
+							userId: userId,
+							ipAddress: meta.ipAddress || null,
+							requestId: meta.requestId || null,
+							source: meta.source || "backend",
+							action: meta.action || null,
+							entityType: meta.entityType || null,
+							entityId: entityId,
+							errorStack: stack || meta.errorStack || null,
+							details: meta.details || {},
+						};
+					})(),
+				} as MongoDBConnectionOptions;
+
+				const dbTransport = new winston.transports.MongoDB(dbOptions);
+				transports.push(dbTransport);
+			} else {
+				// If not connected, warn and don't add DB transport
+				console.warn("Mongoose connection not active. Skipping DB logging transport for now.");
+				console.warn(
+					"Ensure mongoose.connect() is called and successful before initializing loggers with DB logging."
+				);
+			}
 		}
 
 		if (transports.length === 0) {
